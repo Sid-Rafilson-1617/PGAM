@@ -1,6 +1,6 @@
 # Poisson Generalized Additive Model (PGAM)
 
-This repository provides tools for estimating neuronal tuning curves from spike count data using a Poisson Generalized Additive Model (PGAM). Tuning curves are constructed with B-spline bases whose knots and order are specified in `make_config`, and results can be plotted to assess significance.
+This repository provides tools for estimating neuronal tuning curves from spike count data using a Poisson Generalized Additive Model (PGAM). The PGAM tool was originally developed by Eduardo Bolzani in Christina Savin's group, and the original codebase can be found at [Savin-Lab-Code/PGAM](https://github.com/Savin-Lab-Code/PGAM). This repository adapts that tool for application to data collected in the Smear Lab. Tuning curves are constructed with B-spline bases whose knots and order are specified in `make_config`, and results can be plotted to assess significance.
 
 ## Setup
 
