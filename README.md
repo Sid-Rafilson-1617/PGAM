@@ -3,7 +3,6 @@
 This repository provides tools for estimating neuronal tuning curves from spike count data using a Poisson Generalized Additive Model (PGAM). Tuning curves are constructed with B-spline bases whose knots and order are specified in `make_config`, and results can be plotted to assess significance.
 
 ## Setup
-
 1. Install [R](https://www.r-project.org/) and [Anaconda](https://www.anaconda.com/). Add R to your system path and define an `R_HOME` environment variable pointing to the R installation.
 2. Create the conda environment and install packages:
    ```bash
