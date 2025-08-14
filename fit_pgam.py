@@ -1,4 +1,11 @@
-from core import compute_spike_rates, compute_sniff_freqs_bins, align_brain_and_behavior, load_behavior
+"""Fit Poisson Generalized Additive Models (PGAMs) to neural data."""
+
+from core import (
+    compute_spike_rates,
+    compute_sniff_freqs_bins,
+    align_brain_and_behavior,
+    load_behavior,
+)
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
@@ -7,39 +14,50 @@ import yaml
 import os
 import time
 import sys
-sys.path.append('src/PGAM')
+
+sys.path.append("src/PGAM")
 
 import GAM_library as gl
 import gam_data_handlers as gdh
 from post_processing import postprocess_results
-import yaml
 import statsmodels.api as sm
 
 
 
 
-def preprocess(data_dir, save_dir, mouse, session, window_size, step_size, use_units, nfs = 30_000, sfs = 1_000):
+def preprocess(
+    data_dir,
+    save_dir,
+    mouse,
+    session,
+    window_size,
+    step_size,
+    use_units,
+    nfs=30_000,
+    sfs=1_000,
+):
+    """Prepare inputs for PGAM fitting."""
 
-    # Loading the neural data and computing the spike rates
+    # Load neural data and compute spike rates
     kilosort_dir = os.path.join(data_dir, 'kilosorted', mouse, session)
     rates_OB, rates_HC, time_bins, ob_units, hc_units = compute_spike_rates(kilosort_dir, nfs, window_size, step_size, use_units=use_units, sigma = 0, zscore=False)
     rates = np.concatenate((rates_HC, rates_OB), axis=0)
     units = np.concatenate((hc_units, ob_units), axis=0)
 
 
-    # Loading the sniffing data
-    sniff_params_file = os.path.join(data_dir, 'sniff events', mouse, session, 'sniff_params')
+    # Load sniffing data
+    sniff_params_file = os.path.join(data_dir, 'sniff', mouse, session, 'sniff_params')
     mean_freqs, latencies, phases = compute_sniff_freqs_bins(sniff_params_file, time_bins, window_size, sfs)
 
 
-    # Loading the behavior (tracking & task variable) data
+    # Load behavior and tracking data
     behavior_dir = os.path.join(data_dir, 'behavior_data', mouse, session)
     tracking_dir = os.path.join(data_dir, 'sleap_predictions', mouse, session)
     tracking_file = os.path.join(tracking_dir, next(f for f in os.listdir(tracking_dir) if f.endswith('.analysis.h5')))
     events = load_behavior(behavior_dir, tracking_file)
 
 
-    # Aligning the neural and behavior data
+    # Align neural and behavioral data
     rates_data = align_brain_and_behavior(events, rates, units, time_bins, window_size)
     rates_data = rates_data.assign(sns=mean_freqs, latency=latencies, phase=phases)
     rates_data['sns'] = rates_data['sns'].interpolate(method='linear')
@@ -47,7 +65,7 @@ def preprocess(data_dir, save_dir, mouse, session, window_size, step_size, use_u
     print(rates_data.head())
 
 
-    # Converting the data to numpy arrays for PGAM standardized input
+    # Convert to standardized PGAM inputs
     counts = np.array(rates_data.drop(columns=['x', 'y', 'v_x', 'v_y', 'sns', 'speed', 'latency', 'phase', 'reward_state', 'time', 'trial_id', 'click']).values) * window_size
     position = rates_data[['x', 'y']].to_numpy()
     velocity = rates_data[['v_x', 'v_y']].to_numpy()
@@ -74,7 +92,7 @@ def preprocess(data_dir, save_dir, mouse, session, window_size, step_size, use_u
 
 
     # Plot the variables
-    plot_dir = os.path.join(save_dir, 'behaior_figs')
+    plot_dir = os.path.join(save_dir, 'behavior_figs')
     os.makedirs(plot_dir, exist_ok=True)
     for i, name in enumerate(variable_names):
         if name in ['position', 'velocity']:
@@ -101,6 +119,7 @@ def preprocess(data_dir, save_dir, mouse, session, window_size, step_size, use_u
 
 
 def make_config(order, window_size, save_path):
+    """Create and store the configuration file for PGAM covariates."""
 
     # make the knots
     knots_x = np.hstack(([-75]*(order-1), np.linspace(-75,75,5),[75]*(order-1)))
@@ -224,7 +243,7 @@ def make_config(order, window_size, save_path):
 
 
 def main(args):
-
+    """Execute preprocessing and model fitting."""
 
     # Use a non-interactive backend for matplotlib
     matplotlib.use('Agg')

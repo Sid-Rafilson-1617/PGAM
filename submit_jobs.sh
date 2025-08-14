@@ -40,10 +40,9 @@ TOTAL_COMBINATIONS=$((NUM_MICE * NUM_SESSIONS))
 MOUSE_INDEX=$((SLURM_ARRAY_TASK_ID / NUM_SESSIONS))
 SESSION_INDEX=$((SLURM_ARRAY_TASK_ID % NUM_SESSIONS))
 
-# Get values
+# Get values for this array job
 MOUSE=${MICE[$MOUSE_INDEX]}
 SESSION=${SESSIONS[$SESSION_INDEX]}
-
 
 # Define the save directory for figures
 SAVE_DIR="/projects/smearlab/shared/clickbait-ephys(3-20-25)/figures/PGAM/6ms_good"
@@ -62,4 +61,6 @@ python fit_pgam.py \
     --window_step 0.006 \
     --use_units 'good' \
     --order 4 \
-    --frac_eval 0.05 \
+    --frac_eval 0.05
+
+echo "Job finished at: $(date)"
