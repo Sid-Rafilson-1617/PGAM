@@ -106,6 +106,8 @@ def compute_spike_rates(kilosort_dir: str, sampling_rate: int, window_size: floa
     elif use_units == 'noise':
         unit_indices = np.where(cluster_groups == 'noise')[0]
         unit_best_channels = {unit: unit_best_channels[unit] for unit in unit_indices}
+    else:
+        raise ValueError(f"Unknown unit selection '{use_units}'.")
 
 
     # Get total duration of the recording
@@ -165,7 +167,32 @@ def compute_spike_rates(kilosort_dir: str, sampling_rate: int, window_size: floa
 
 
 
-def compute_sniff_freqs_bins(sniff_params_file: str, time_bins: np.ndarray, window_size: float, sfs: int):
+def compute_sniff_freqs_bins(
+    sniff_params_file: str,
+    time_bins: np.ndarray,
+    window_size: float,
+    sfs: int,
+):
+    """Compute sniffing statistics aligned to provided time bins.
+
+    Parameters
+    ----------
+    sniff_params_file : str
+        Path to the MATLAB ``sniff_params`` file.
+    time_bins : np.ndarray
+        Start times of the neural data bins in seconds.
+    window_size : float
+        Width of each time bin in seconds.
+    sfs : int
+        Sampling frequency of the sniff signal (Hz).
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        Mean sniff frequency, latency from the last inhalation and sniff phase for
+        each time bin.
+    """
+
     inhalation_times, _, exhalation_times, _ = load_sniff_MATLAB(sniff_params_file)
     inhalation_times = inhalation_times / sfs  # Convert to seconds
 
@@ -226,7 +253,7 @@ def align_brain_and_behavior(events: pd.DataFrame, spike_rates: np.ndarray, unit
     ----------
     events : pd.DataFrame
         Behavioral tracking data containing columns:
-        - 'timestamps_ms': Timestamps in milliseconds
+        - 'timestamp_ms': Timestamps in milliseconds
         - 'centroid_x', 'centroid_y': Position coordinates
         - 'velocity_x', 'velocity_y': Velocity components
         - 'speed': Overall movement speed
@@ -244,8 +271,8 @@ def align_brain_and_behavior(events: pd.DataFrame, spike_rates: np.ndarray, unit
         Size of each time window in seconds, default is 0.1.
     
     speed_threshold : float, optional
-        Threshold for removing speed outliers, expressed as multiplier of standard deviation, 
-        default is 4.0 (values > 4 × std are treated as outliers).
+        Maximum allowed speed in cm/s for behavioral measurements. Values above this
+        threshold are treated as outliers. Default is 100.
     
     Returns
     -------
@@ -260,7 +287,7 @@ def align_brain_and_behavior(events: pd.DataFrame, spike_rates: np.ndarray, unit
     Notes
     -----
     - For each time bin, the behavioral event closest to the middle of the bin is selected
-    - Speed outliers are removed using a threshold based on standard deviation
+    - Speed outliers are removed using an absolute threshold
     - Missing values are interpolated using linear interpolation
     - Rows with missing behavioral data (typically at beginning/end of recording) are removed
     """
@@ -311,7 +338,7 @@ def align_brain_and_behavior(events: pd.DataFrame, spike_rates: np.ndarray, unit
     data['time'] = time_bins # in seconds
     data['reward_state'] = mean_rewards
 
-    
+    # Remove samples where speed exceeds the allowable threshold
     data.loc[data['speed'] > speed_threshold, ['x', 'y', 'v_x', 'v_y', 'speed']] = np.nan
 
     # interpolating the tracking data to fill in NaN values
@@ -343,20 +370,19 @@ def load_behavior(behavior_file: str, tracking_file: str = None) -> pd.DataFrame
     Parameters
     ----------
     behavior_file : str
-        Path to the CSV file containing behavioral tracking data. The file should
-        include columns for 'centroid_x', 'centroid_y', and 'timestamps_ms'.
+        Path to the directory containing ``events.csv`` with behavioral tracking
+        data. The file should include columns for ``centroid_x``, ``centroid_y``
+        and ``timestamp_ms``.
         
     Returns
     -------
     events : pandas.DataFrame
         Processed dataframe containing the following columns:
-        - 'time': Original time values
-        - 'centroid_x': Zero-centered x coordinates 
-        - 'centroid_y': Zero-centered y coordinates
-        - 'velocity_x': Rate of change in x position
-        - 'velocity_y': Rate of change in y position
-        - 'speed': Overall movement speed (Euclidean norm of velocity components)
-        - 'timestamps_ms': Timestamps in milliseconds
+        - ``position_x`` and ``position_y``: Zero-centered coordinates
+        - ``velocity_x`` and ``velocity_y``: Rate of change in position
+        - ``reward_state``: Binary reward indicator
+        - ``speed``: Overall movement speed (Euclidean norm of velocity components)
+        - ``timestamp_ms``: Timestamps in milliseconds
         
     Notes
     -----
@@ -424,83 +450,131 @@ def load_sniff_MATLAB(file: str) -> np.array:
     return inhalation_times.astype(np.int32), inhalation_voltage, exhalation_times.astype(np.int32), exhalation_voltage
 
 
-def preprocess(data_dir, save_dir, mouse, session, window_size, step_size, use_units, nfs = 30_000, sfs = 1_000):
+def preprocess(
+    data_dir,
+    save_dir,
+    mouse,
+    session,
+    window_size,
+    step_size,
+    use_units,
+    nfs=30_000,
+    sfs=1_000,
+):
+    """Preprocess neural, sniff and behavioral data for PGAM fitting."""
 
-    # Loading the neural data and computing the spike rates
-    kilosort_dir = os.path.join(data_dir, 'kilosorted', mouse, session)
-    rates_OB, rates_HC, time_bins, ob_units, hc_units = compute_spike_rates(kilosort_dir, nfs, window_size, step_size, use_units=use_units, sigma = 0, zscore=False)
+    # --- Neural data: compute spike rates ---
+    kilosort_dir = os.path.join(data_dir, "kilosorted", mouse, session)
+    rates_OB, rates_HC, time_bins, ob_units, hc_units = compute_spike_rates(
+        kilosort_dir, nfs, window_size, step_size, use_units=use_units, sigma=0, zscore=False
+    )
     rates = np.concatenate((rates_HC, rates_OB), axis=0)
     units = np.concatenate((hc_units, ob_units), axis=0)
 
+    # --- Sniffing data ---
+    sniff_params_file = os.path.join(data_dir, "sniff", mouse, session, "sniff_params")
+    mean_freqs, latencies, phases = compute_sniff_freqs_bins(
+        sniff_params_file, time_bins, window_size, sfs
+    )
 
-    # Loading the sniffing data
-    sniff_params_file = os.path.join(data_dir, 'sniff', mouse, session, 'sniff_params')
-    mean_freqs, latencies, phases = compute_sniff_freqs_bins(sniff_params_file, time_bins, window_size, sfs)
-
-
-    # Loading the behavior (tracking & task variable) data
-    behavior_dir = os.path.join(data_dir, 'behavior_data', mouse, session)
-    tracking_dir = os.path.join(data_dir, 'sleap_predictions', mouse, session)
-    tracking_file = os.path.join(tracking_dir, next(f for f in os.listdir(tracking_dir) if f.endswith('.analysis.h5')))
+    # --- Behavioral data ---
+    behavior_dir = os.path.join(data_dir, "behavior_data", mouse, session)
+    tracking_dir = os.path.join(data_dir, "sleap_predictions", mouse, session)
+    tracking_file = os.path.join(
+        tracking_dir, next(f for f in os.listdir(tracking_dir) if f.endswith(".analysis.h5"))
+    )
     events = load_behavior(behavior_dir, tracking_file)
 
-
-    # Aligning the neural and behavior data
+    # --- Align neural and behavioral data ---
     rates_data = align_brain_and_behavior(events, rates, units, time_bins, window_size)
     rates_data = rates_data.assign(sns=mean_freqs, latency=latencies, phase=phases)
-    rates_data['sns'] = rates_data['sns'].interpolate(method='linear')
-    rates_data.dropna(subset=['x', 'y', 'v_x', 'v_y'], inplace=True)
+    rates_data["sns"] = rates_data["sns"].interpolate(method="linear")
+    rates_data.dropna(subset=["x", "y", "v_x", "v_y"], inplace=True)
     print(rates_data.head())
 
-
-    # Converting the data to numpy arrays for PGAM standardized input
-    counts = np.array(rates_data.drop(columns=['x', 'y', 'v_x', 'v_y', 'sns', 'speed', 'latency', 'phase', 'reward_state', 'time', 'trial_id', 'click']).values) * window_size
+    # --- Convert to standardized PGAM input ---
+    counts = (
+        np.array(
+            rates_data.drop(
+                columns=[
+                    "x",
+                    "y",
+                    "v_x",
+                    "v_y",
+                    "sns",
+                    "speed",
+                    "latency",
+                    "phase",
+                    "reward_state",
+                    "time",
+                    "trial_id",
+                    "click",
+                ]
+            ).values
+        )
+        * window_size
+    )
     variables = [
-        rates_data['x'].to_numpy(),
-        rates_data['y'].to_numpy(),
-        rates_data['v_x'].to_numpy(),
-        rates_data['v_y'].to_numpy(),                             
-        rates_data['sns'].to_numpy(),           
-        rates_data['latency'].to_numpy(),
-        rates_data['phase'].to_numpy(),
-        rates_data['speed'].to_numpy(),
-        rates_data['click'].to_numpy()
+        rates_data["x"].to_numpy(),
+        rates_data["y"].to_numpy(),
+        rates_data["v_x"].to_numpy(),
+        rates_data["v_y"].to_numpy(),
+        rates_data["sns"].to_numpy(),
+        rates_data["latency"].to_numpy(),
+        rates_data["phase"].to_numpy(),
+        rates_data["speed"].to_numpy(),
+        rates_data["click"].to_numpy(),
     ]
-    rates_data.drop(columns=['x', 'y', 'v_x', 'v_y'], inplace=True)
+    rates_data.drop(columns=["x", "y", "v_x", "v_y"], inplace=True)
 
-    variable_names = ['position_x', 'position_y', 'velocity_x', 'velocity_y', 'sns', 'latency', 'phase', 'speed', 'click']
+    variable_names = [
+        "position_x",
+        "position_y",
+        "velocity_x",
+        "velocity_y",
+        "sns",
+        "latency",
+        "phase",
+        "speed",
+        "click",
+    ]
 
-    trial_ids = np.array(rates_data['trial_id'].values)
-
-    neu_names = np.array(rates_data.columns[:len(counts[0])])
+    trial_ids = np.array(rates_data["trial_id"].values)
+    neu_names = np.array(rates_data.columns[: len(counts[0])])
 
     neu_info = {}
     for i, name in enumerate(neu_names):
-        neu_info[name] = {'area': 'HC' if i < len(hc_units) else 'OB', 'id': units[i]}
+        neu_info[name] = {"area": "HC" if i < len(hc_units) else "OB", "id": units[i]}
 
-
-    # Plot the variables
-    plot_dir = os.path.join(save_dir, 'behaior_figs')
+    # --- Plot variables for inspection ---
+    plot_dir = os.path.join(save_dir, "behavior_figs")
     os.makedirs(plot_dir, exist_ok=True)
     for i, name in enumerate(variable_names):
-        if name in ['position', 'velocity']:
+        if name in ["position", "velocity"]:
             plt.figure(figsize=(15, 8))
-            plt.plot(variables[i][:, 0], label=f'{name} x')
-            plt.plot(variables[i][:, 1], label=f'{name} y')
+            plt.plot(variables[i][:, 0], label=f"{name} x")
+            plt.plot(variables[i][:, 1], label=f"{name} y")
             plt.title(name)
             plt.legend()
             sns.despine()
-            plt.savefig(os.path.join(plot_dir, f'{name}.png'))
+            plt.savefig(os.path.join(plot_dir, f"{name}.png"))
             plt.close()
         else:
             plt.figure(figsize=(15, 8))
             plt.plot(variables[i])
             plt.title(name)
             sns.despine()
-            plt.savefig(os.path.join(plot_dir, f'{name}.png'))
+            plt.savefig(os.path.join(plot_dir, f"{name}.png"))
             plt.close()
 
-
-    #np.savez(os.path.join(save_dir, f'data.npz'), counts=counts, variables=variables, variable_names=variable_names, trial_ids = trial_ids, neu_names = neu_names, neu_info=neu_info)
+    # np.savez(
+    #     os.path.join(save_dir, f"data.npz"),
+    #     counts=counts,
+    #     variables=variables,
+    #     variable_names=variable_names,
+    #     trial_ids=trial_ids,
+    #     neu_names=neu_names,
+    #     neu_info=neu_info,
+    # )
     return counts, variables, variable_names, trial_ids, neu_names, neu_info
 
